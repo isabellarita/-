@@ -2,8 +2,8 @@ import streamlit as st
 from datetime import datetime
 
 # 1. 页面配置
-st.set_page_config(page_title="审批流工作台", layout="wide")
-st.title("🎬 视频生产流 (含批注与待定)")
+st.set_page_config(page_title="团队协作工作流", layout="wide")
+st.title("🎬 视频生产流 (含反馈透传)")
 
 # 2. 初始化数据
 if 'tasks' not in st.session_state:
@@ -14,7 +14,8 @@ if 'tasks' not in st.session_state:
             "status": "待选题审核", 
             "owner": "小王", 
             "content": "暂无文案",
-            "boss_comment": ""  # 新增：老板批注字段
+            "boss_comment": "",      # 老板的具体意见
+            "feedback_type": "none"  # 状态类型: pass(通过)/reject(驳回)/hold(待定)
         },
     ]
 
@@ -39,16 +40,19 @@ with st.sidebar:
                     "status": "待选题审核",
                     "owner": new_owner,
                     "content": "",
-                    "boss_comment": ""
+                    "boss_comment": "",
+                    "feedback_type": "none"
                 })
                 st.success("选题已提交！")
                 st.rerun()
 
-# 4. 状态流转函数
-def update_status(task_id, new_status):
+# 4. 状态更新辅助函数 (核心修改：增加 type 记录是好消息还是坏消息)
+def update_task(task_id, new_status, comment, fb_type):
     for task in st.session_state.tasks:
         if task['id'] == task_id:
             task['status'] = new_status
+            task['boss_comment'] = comment
+            task['feedback_type'] = fb_type
             break
 
 def delete_task(task_id):
@@ -57,63 +61,58 @@ def delete_task(task_id):
 # 5. 主界面布局
 col1, col2, col3, col4, col5 = st.columns(5)
 
-# --- 第一列：选题审核池 (重点修改区域) ---
+# ==========================================
+# 第一列：选题审核池
+# ==========================================
 with col1:
     st.subheader("1. 选题审核池")
     st.divider()
     for task in st.session_state.tasks:
-        # 显示 "待审核" 和 "待定" 的任务
         if task['status'] in ["待选题审核", "选题待定"]:
-            # 根据状态显示不同的边框颜色（视觉提示）
-            border_color = True 
-            
+            border_color = True
             with st.container(border=border_color):
-                # 标题部分
+                # 标题展示
                 if task['status'] == "选题待定":
                     st.warning(f"🤔 待定：**{task['title']}**")
                 else:
                     st.write(f"🆕 **{task['title']}**")
-                
                 st.caption(f"申请人: {task['owner']}")
-                
-                # --- 老板视图 ---
+
+                # --- 老板操作区 ---
                 if user_role == "老板":
-                    # 1. 批注输入框
-                    new_comment = st.text_input("老板意见/批注：", value=task['boss_comment'], key=f"cmt_{task['id']}")
-                    task['boss_comment'] = new_comment # 实时保存
+                    # 获取之前的意见，方便修改
+                    comment_input = st.text_input("老板意见：", value=task['boss_comment'], key=f"c1_{task['id']}")
                     
-                    # 2. 按钮操作区
                     c1, c2, c3 = st.columns([1,1,1])
                     with c1:
-                        if st.button("✅", key=f"pass_{task['id']}", help="通过"):
-                            update_status(task['id'], "文案撰写中")
+                        if st.button("✅", key=f"pass1_{task['id']}", help="通过"):
+                            # 状态变更为：文案撰写中，类型为：pass
+                            update_task(task['id'], "文案撰写中", comment_input, "pass")
                             st.rerun()
                     with c2:
-                        if st.button("🤔", key=f"hold_{task['id']}", help="待定"):
-                            update_status(task['id'], "选题待定")
+                        if st.button("🤔", key=f"hold1_{task['id']}", help="待定"):
+                            # 状态变更为：选题待定，类型为：hold
+                            update_task(task['id'], "选题待定", comment_input, "hold")
                             st.rerun()
                     with c3:
-                        if st.button("❌", key=f"rej_{task['id']}", help="直接删除"):
+                        if st.button("❌", key=f"del1_{task['id']}", help="删除"):
                             delete_task(task['id'])
                             st.rerun()
-                            
-                # --- 员工视图 ---
+                
+                # --- 员工查看区 ---
                 else:
-                    # 显示老板的批注
-                    if task['boss_comment']:
-                        st.info(f"老板说：{task['boss_comment']}")
-                    
                     if task['status'] == "选题待定":
-                        st.caption("状态：老板正在考虑中...")
+                        st.warning(f"老板说：{task['boss_comment']}")
                     else:
-                        st.caption("状态：等待审核")
+                        st.caption("等待审核中...")
                     
-                    # 员工删除/撤回按钮
-                    if st.button("🗑️ 撤回/删除", key=f"del_{task['id']}"):
+                    if st.button("撤回", key=f"back1_{task['id']}"):
                         delete_task(task['id'])
                         st.rerun()
 
-# --- 第二列：文案撰写 ---
+# ==========================================
+# 第二列：文案撰写 (员工看到反馈的核心区域)
+# ==========================================
 with col2:
     st.subheader("2. 文案撰写中")
     st.divider()
@@ -121,18 +120,26 @@ with col2:
         if task['status'] == "文案撰写中":
             with st.container(border=True):
                 st.write(f"**{task['title']}**")
-                if task['boss_comment']:
-                     st.caption(f"老板备注：{task['boss_comment']}")
                 
-                new_content = st.text_area("文案内容", value=task['content'], key=f"txt_{task['id']}")
+                # --- 🌟 核心修改：显示上一轮的反馈 ---
+                if task['feedback_type'] == "pass":
+                    st.success(f"✅ 选题已通过！\n\n老板嘱咐：{task['boss_comment'] if task['boss_comment'] else '无'}")
+                elif task['feedback_type'] == "reject":
+                    st.error(f"❌ 文案被退回！\n\n修改意见：{task['boss_comment']}")
+                # ------------------------------------
+
+                new_content = st.text_area("编写文案", value=task['content'], height=150, key=f"txt_{task['id']}")
                 task['content'] = new_content
                 
                 if user_role == "员工":
-                    if st.button("提交文案审核 ➡️", key=f"sub_script_{task['id']}"):
-                        update_status(task['id'], "待文案审核")
+                    if st.button("提交文案审核 ➡️", key=f"sub2_{task['id']}"):
+                        # 提交后，清空反馈类型，以免干扰下一阶段
+                        update_task(task['id'], "待文案审核", task['boss_comment'], "none")
                         st.rerun()
 
-# --- 第三列：文案审核 ---
+# ==========================================
+# 第三列：文案审核
+# ==========================================
 with col3:
     st.subheader("3. 待文案审核")
     st.divider()
@@ -140,19 +147,28 @@ with col3:
         if task['status'] == "待文案审核":
             with st.container(border=True):
                 st.write(f"**{task['title']}**")
-                with st.expander("查看文案"):
-                    st.write(task['content'])
+                with st.expander("📄 查看详细文案", expanded=True):
+                    st.text(task['content'])
                 
                 if user_role == "老板":
+                    comment_input = st.text_input("修改/制作意见：", key=f"c3_{task['id']}")
+                    
                     c1, c2 = st.columns(2)
-                    if c1.button("✅ 拍板", key=f"app_s_{task['id']}"):
-                        update_status(task['id'], "制作中")
-                        st.rerun()
-                    if c2.button("↩️ 返工", key=f"rej_s_{task['id']}"):
-                        update_status(task['id'], "文案撰写中")
-                        st.rerun()
+                    with c1:
+                        if st.button("✅ 拍板制作", key=f"pass3_{task['id']}"):
+                            update_task(task['id'], "制作中", comment_input, "pass")
+                            st.rerun()
+                    with c2:
+                        if st.button("↩️ 打回修改", key=f"rej3_{task['id']}"):
+                            # 这里的 reject 会导致回到第二列时显示红色报错
+                            update_task(task['id'], "文案撰写中", comment_input, "reject")
+                            st.rerun()
+                else:
+                    st.info("⏳ 老板正在审稿...")
 
-# --- 第四列：制作中 ---
+# ==========================================
+# 第四列：制作中 (带制作要求)
+# ==========================================
 with col4:
     st.subheader("4. 制作中")
     st.divider()
@@ -160,12 +176,20 @@ with col4:
         if task['status'] == "制作中":
             with st.container(border=True):
                 st.write(f"**{task['title']}**")
-                st.success("进入制作流程")
-                if st.button("完成", key=f"fin_{task['id']}"):
-                    update_status(task['id'], "已发布")
+                
+                # 显示通过文案时的嘱咐
+                st.success(f"🎬 文案已定稿！\n\n制作要求：{task['boss_comment'] if task['boss_comment'] else '无'}")
+                
+                with st.expander("查看定稿文案"):
+                    st.text(task['content'])
+
+                if st.button("✅ 制作完成", key=f"fin4_{task['id']}"):
+                    update_task(task['id'], "已发布", "", "none")
                     st.rerun()
 
-# --- 第五列：已发布 ---
+# ==========================================
+# 第五列：已发布
+# ==========================================
 with col5:
     st.subheader("5. 已发布")
     st.divider()
